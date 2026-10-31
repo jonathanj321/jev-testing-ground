@@ -1,0 +1,4 @@
+typesafe-sdk==0.7.5
+python-dotenv>=1.2,<2
+Pillow>=11,<14
+pytest>=8,<10
