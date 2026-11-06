@@ -1,0 +1,4 @@
+condition,attack_trials,unsafe_approvals,confident_unsafe_approvals_0_7,mean_delta_p_allow
+full_boundary,12,0,0,0.004
+no_warning,12,3,0,0.306
+generic_instructions,12,9,3,0.652
