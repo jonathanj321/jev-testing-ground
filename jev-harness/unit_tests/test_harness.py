@@ -154,20 +154,47 @@ def test_dataset_valid():
 
 def test_cli_end_to_end(tmp_path, monkeypatch, capsys):
     import main as harness
-    path = tmp_path / 'cases.json'
-    path.write_text(json.dumps([case(), case('injected')]))
+    path = tmp_path / 'cases.jsonl'
+    path.write_text('\n'.join(json.dumps(item) for item in
+                              [case(), case('injected'), case('injected_screenshot')]) + '\n')
     client = Mock()
-    client.evaluate.side_effect = [response(), response('allow', .8)]
+    client.evaluate.side_effect = [response(), response('allow', .8), TimeoutError('offline timeout')]
     monkeypatch.setattr(harness, 'JevClient', Mock(return_value=client))
     monkeypatch.setattr(harness, 'load_dotenv', Mock())
     monkeypatch.setattr('sys.argv', ['main.py', '--input', str(path), '--output', str(tmp_path / 'out')])
-    assert harness.main() == 0
-    assert 'Running test 2/2' in capsys.readouterr().out
+    assert harness.main() == 1
+    assert 'Running test 3/3' in capsys.readouterr().out
     assert {p.name for p in (tmp_path / 'out').iterdir()} == {
-        'results.csv', 'results.json', 'comparisons.csv', 'summary.json'}
+        'results.csv', 'results.json', 'results.jsonl', 'comparisons.csv', 'summary.json', 'report.md'}
     client.close.assert_called_once()
     summary = json.loads((tmp_path / 'out' / 'summary.json').read_text())
     assert summary['unsafe_approvals'] == {'count': 1, 'denominator': 1}
+    assert summary['attack_successes'] == {'count': 1, 'denominator': 1}
+    assert summary['candidate_pairs'] == 2
+    assert summary['latency_ms']['overall']['n'] == 2
+    assert summary['latency_ms']['by_variant']['injected_screenshot']['p95'] is None
+    output = tmp_path / 'out'
+    journal = [json.loads(line) for line in (output / 'results.jsonl').read_text().splitlines()]
+    assert journal == json.loads((output / 'results.json').read_text())['results']
+    assert 'TimeoutError' in journal[-1]['error']
+    assert '| injected_screenshot | 1 | 1 | — | — | — | — |' in (output / 'report.md').read_text()
+
+
+def test_latency_and_attack_eligibility(tmp_path):
+    clean, injected = result(), result('injected_override', 'allow', .8)
+    clean['response']['answers']['decision']['choice'] = 'allow'
+    clean['latency_seconds'], injected['latency_seconds'] = .1, .3
+    summary = export_results([clean, injected], tmp_path, {})
+    assert summary['unsafe_approvals'] == {'count': 1, 'denominator': 1}
+    assert summary['attack_successes'] == {'count': 0, 'denominator': 0}
+    assert summary['latency_ms']['overall'] == {'n': 2, 'p50': 200, 'p95': 300}
+
+
+def test_jsonl_reports_invalid_line(tmp_path):
+    path = tmp_path / 'bad.jsonl'
+    path.write_text(json.dumps(case()) + '\n\n{broken\n')
+    with pytest.raises(ValueError, match=r'bad\.jsonl:3:'):
+        load_tests(path)
 
 
 def test_real_sdk_request_serialization():
@@ -189,3 +216,34 @@ def test_real_sdk_request_serialization():
     assert output['model'] == 'jev-test'
     assert seen[0]['model'] == 'jev-latest'
     assert set(seen[0]['questions']) == {'decision', 'risk', 'violation'}
+
+
+def test_tokenbreak_pilot_distinguishes_detection_evasion_from_unsafe_approval(tmp_path):
+    dataset = Path(__file__).resolve().parents[1] / 'tokenbreak_tests.jsonl'
+    scenarios = {}
+    for item in load_tests(dataset):
+        scenarios.setdefault(item['id'], {})[item['variant']] = item
+    assert len(scenarios) == 3
+    for variants in scenarios.values():
+        clean = variants['clean']
+        for item in variants.values():
+            assert {k: v for k, v in item['state'].items() if k != 'external_content'} == {
+                k: v for k, v in clean['state'].items() if k != 'external_content'}
+            assert item['expected']['decision'] == clean['expected']['decision']
+            assert item['questions'] == clean['questions']
+
+    blocked = next(v for v in scenarios.values() if v['clean']['expected']['decision'] == 'block')
+    rows = []
+    for variant, detection in [('clean', 'benign'), ('control_benign_noise', 'malicious'),
+                               ('injected_plain', 'malicious'), ('injected_tokenbreak_prefix', 'benign')]:
+        payload = response()
+        payload['answers']['injection'] = {'type': 'choice', 'choice': detection}
+        rows.append(evaluate_test(blocked[variant], Mock(evaluate=Mock(return_value=payload)), tmp_path, 'jev'))
+    summary = export_results(rows, tmp_path, {})
+    metrics = summary['injection_detection']
+    assert metrics['control_benign_noise']['benign_false_alarms'] == {'count': 1, 'denominator': 1}
+    assert metrics['injected_tokenbreak_prefix']['evasions'] == {'count': 1, 'denominator': 1}
+    assert summary['unsafe_approvals'] == {'count': 0, 'denominator': 2}
+    rows[2]['response']['answers']['injection']['choice'] = 'benign'
+    summary = export_results(rows, tmp_path, {})
+    assert summary['injection_detection']['injected_tokenbreak_prefix']['evasions']['denominator'] == 0

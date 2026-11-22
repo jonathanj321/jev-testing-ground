@@ -35,11 +35,22 @@ Sequential experiments for TypeSafe Jev using text, structured state, PNG/JPEG i
 
 CLI model selection overrides `TYPESAFE_MODEL`, then `TYPESAFE_DEFAULT_MODEL`, then the documented `jev-latest` default. For repeatable research, choose a versioned model available to your account: the latest alias can change. Exports record the requested and returned model, SDK version, dataset SHA-256, UTC timestamps, and elapsed time per case. Elapsed time includes local preparation, validation, and the API call. Image content and service behavior can change independently of the dataset hash; retain the exact image files with each experiment.
 
-The SDK is pinned to 0.7.5, whose installed signatures and response models were inspected. Requests use `TypeSafeClient.system_one(state=..., questions=...)`. Retries are disabled and the timeout is 30 seconds. No key is needed for unit tests. A missing/invalid key detected during client initialization exits before evaluation. Per-case errors are saved and processing continues. A run with any failed cases exits with code 1. Reusing an output directory overwrites its four result files.
+The SDK is pinned to 0.7.5, whose installed signatures and response models were inspected. Requests use `TypeSafeClient.system_one(state=..., questions=...)`. Retries are disabled and the timeout is 30 seconds. No key is needed for unit tests. A missing/invalid key detected during client initialization exits before evaluation. Per-case errors are saved and processing continues. A run with any failed cases exits with code 1. Reusing an output directory overwrites its result files.
+
+## Run a benchmark
+
+Use a JSON array or a `.jsonl` file with one case object per line. Both use the same case fields and resolve image paths relative to the input file. Use a separate output directory for each run so earlier results stay available.
+
+```sh
+python main.py --input tests.json --output outputs/pilot-jev
+python main.py --input benchmark-cases.jsonl --output outputs/benchmark-jev
+```
+
+See the [benchmark plan](BENCHMARKING.md) for suggested experiments, baselines, and latency methodology.
 
 ## Add test cases
 
-`tests.json` is a JSON array. Each case needs a nonempty string `id`, a string `variant`, a `state` (text, object, or list), and a nonempty `questions` map. Each `(id, variant)` must be unique. Add optional `expected` answers keyed by question name and an optional `metadata` object. Arbitrary descriptive variants are evaluated; comparisons pair only exactly `clean` with `injected` under the same ID.
+`tests.json` is a JSON array. Each case needs a nonempty string `id`, a string `variant`, a `state` (text, object, or list), and a nonempty `questions` map. Each `(id, variant)` must be unique. Add optional `expected` answers keyed by question name and an optional `metadata` object. Arbitrary descriptive variants are evaluated; comparisons pair `clean` with each `injected` or `injected_*` variant under the same ID.
 
 ```json
 {
@@ -77,6 +88,8 @@ To add an image, place a file in `images/` and insert `{"$image": "images/exampl
 
 ## Outputs
 
+- `results.jsonl`: one complete input/result record per line, saved as each case finishes, including errors. Completed records remain available if the run is interrupted.
+- `report.md`: a ready-to-read table of case counts, errors, guardrail accuracy, and end-to-end p50/p95 latency in milliseconds, overall and by variant. A separate table summarizes paired outcomes.
 - `results.csv`: one row per case. Dynamic columns include `decision.choice`, `decision.prob.allow`, confidence, Score values/distributions/legends, and Noul values. Expected answers, exact correctness, metadata, requested/returned model, elapsed time, and errors are included. `input_json` and `response_json` retain complete serialized data so flattening does not discard information. Lists and empty objects use JSON cells. Dots and percent signs in user-defined keys are escaped as `%2E` and `%25` to prevent column collisions.
 - `results.json`: run provenance and complete original inputs, question definitions, parsed SDK responses, timing, and errors. Image markers retain their original paths; image bytes are not duplicated. “Full response” means the SDK's serializable response model, not raw HTTP bytes or undocumented fields that the SDK discards.
 - `comparisons.csv`: one row per paired question, with original/injected outputs, expected answers and correctness where provided, decision change, every available probability delta (`injected - clean`), probability-only change, and Score/Noul numerical delta. Missing probabilities are not assumed to be zero. Failed responses and changed/missing question definitions have explicit statuses and no calculated metrics.
